@@ -86,6 +86,7 @@ def get_force_join_markup():
         markup.add(InlineKeyboardButton(f"Join @{channel}", url=f"https://t.me/{channel}"))
     markup.add(InlineKeyboardButton("✅ Verify / Joined", callback_data="verify_join"))
     return markup
+
 # ==========================================
 # 👤 USER PANEL & /start COMMAND
 # ==========================================
@@ -107,9 +108,16 @@ def start_command(message):
             "name": user_name,
             "expiry": 0,
             "refers": 0,
-            "otps_received": 0
+            "otps_received": 0,
+            "captcha_verified_at": 0
         }
         save_db(db_data)
+
+    # 2b. Captcha 24h bypass
+    last_verify = db_data['users'][user_id].get('captcha_verified_at', 0)
+    if time.time() - last_verify < 86400:
+        show_main_menu(message.chat.id, message.from_user.id)
+        return
 
     # 3. Captcha Verification (Math)
     num1 = random.randint(1, 10)
@@ -136,6 +144,8 @@ def captcha_handler(call):
     _, clicked, correct = call.data.split('_')
     
     if clicked == correct:
+        db_data['users'][str(call.from_user.id)]['captcha_verified_at'] = time.time()
+        save_db(db_data)
         bot.delete_message(call.message.chat.id, call.message.message_id)
         show_main_menu(call.message.chat.id, call.from_user.id)
     else:
@@ -205,6 +215,7 @@ def show_main_menu(chat_id, user_id):
         except Exception:
             pass  # photo fail hui toh fallback text
     bot.send_message(chat_id, caption, reply_markup=markup, parse_mode='HTML')
+
 # ==========================================
 # 🎲 GENERATE NUMBER (FIREBASE SE DEVICE LANA)
 # ==========================================
@@ -222,12 +233,19 @@ def get_online_devices():
         try:
             # Vercel panel jise URL se data laata hai
             res = requests.get(f"{fb_url}/clients.json", timeout=10)
+            print(f"[FB DEBUG] {fb_url} -> {res.status_code} | raw: {res.text[:300]}")
             if res.status_code == 200:
                 data = res.json()
                 if data:
+                    # assumption: handle both dict and list responses from /clients.json
+                    if isinstance(data, list):
+                        data = {str(i): v for i, v in enumerate(data)}
                     for dev_id, dev_info in data.items():
-                        # Agar device online hai aur kisi ke lock me nahi hai
-                        if str(dev_info.get('status', '')).lower() == 'online' or dev_info.get('online') == True:
+                        if not isinstance(dev_info, dict):
+                            continue
+                        # Broader online check: status "online" or boolean online=True
+                        status_ok = str(dev_info.get('status', '')).lower() == 'online' or dev_info.get('online') is True
+                        if status_ok:
                             if dev_id not in db_data.get('active_monitors', {}):
                                 all_devices.append({
                                     "device_id": dev_id,
@@ -417,7 +435,7 @@ def background_scanner():
             print(f"Scanner Error: {e}")
             
         time.sleep(5) # Har 5 second me check karega
-        # otp bot.py — PART 2/2
+# otp bot.py — PART 2/2
 # ==========================================
 # 👑 OWNER PANEL (ADMIN UI & COMMANDS)
 # ==========================================
@@ -735,12 +753,24 @@ def remove_item_handler(call):
 # ==========================================
 if __name__ == '__main__':
     print("🤖 Bot is starting...")
-    
+
+    # assumption: Render web service requires an open HTTP port.
+    # Starting a tiny HTTP server on $PORT so Render's port scan passes.
+    import os
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    class _Health(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+    def _serve():
+        port = int(os.environ.get("PORT", 10000))
+        HTTPServer(("0.0.0.0", port), _Health).serve_forever()
+    threading.Thread(target=_serve, daemon=True).start()
+
     # Background Scanner ko alag thread me start karo
     # Isse bot ka main thread block nahi hoga aur SMS scanning chalti rahegi
     scanner_thread = threading.Thread(target=background_scanner, daemon=True)
     scanner_thread.start()
     print("🔍 Background Scanner Started...")
-    
+
     print("✅ Bot is Live Now!")
     bot.infinity_polling(timeout=10, long_polling_timeout=5)
